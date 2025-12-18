@@ -17,9 +17,9 @@ import { AiService } from '../services/ai.service';
 export class ChessBoardComponent {
   humanColor: 'white' | 'black' = 'white';
   aiColor: 'white' | 'black' = 'black';
+  currentTurn: 'white' | 'black' = 'white';
 
   board: Board = [];
-  currentTurn: 'white' | 'black' = 'white';
   validMoves: { row: number; col: number }[] = [];
   capturedWhite: Piece[] = [];
   capturedBlack: Piece[] = [];
@@ -306,43 +306,38 @@ export class ChessBoardComponent {
     to: { row: number; col: number }
   ) {
     const piece = this.board[from.row][from.col].piece;
+
+    // ❌ pieza inexistente
     if (!piece) {
-      console.error('La IA intentó mover una pieza inexistente');
-
       this.aiThoughtHistory.push(
-        'The previous move was invalid because the selected piece did not exist. I must choose a legal move.'
+        'Invalid move: the selected piece does not exist. I must choose a legal move.'
       );
+      this.retryAiMove();
+      return;
+    }
 
-      // volver a pedir jugada
-      setTimeout(() => {
-        this.triggerAiMove({
-          white: this.scoreWhite,
-          black: this.scoreBlack,
-        });
-      }, 200);
-
+    // ❌ misma casilla
+    if (from.row === to.row && from.col === to.col) {
+      this.retryAiMove();
       return;
     }
 
     const targetPiece = this.board[to.row][to.col].piece;
-    // 🟥 Mismo color
+
+    // ❌ mismo color
     if (targetPiece && targetPiece.color === piece.color) {
-      this.dragFrom = null;
-      this.validMoves = [];
       this.aiThoughtHistory.push(
-        'The previous move was invalid because I tried to capture my own piece. I must choose a legal move.'
+        'Invalid move: I tried to capture my own piece.'
       );
-      // volver a pedir jugada
-      setTimeout(() => {
-        this.triggerAiMove({
-          white: this.scoreWhite,
-          black: this.scoreBlack,
-        });
-      }, 200);
+      this.retryAiMove();
       return;
     }
-    // 🟥 captura
-    if (targetPiece) {
+
+    // 🟢 preparar animación
+    this.movingPiece = { from, to };
+
+    // 🟥 CAPTURA
+    if (targetPiece && targetPiece.color !== piece.color) {
       const value = this.pieceValues[targetPiece.type] ?? 0;
 
       if (piece.color === 'white') {
@@ -352,21 +347,35 @@ export class ChessBoardComponent {
         this.scoreBlack += value;
         this.capturedWhite.push(targetPiece);
       }
+
+      this.board[to.row][to.col].capturing = true;
+
+      setTimeout(() => {
+        this.board[to.row][to.col].piece = piece;
+        this.board[from.row][from.col].piece = undefined;
+
+        this.board[to.row][to.col].capturing = false;
+
+        this.afterMove(from.row, from.col, to.row, to.col);
+      }, 300);
+
+      return;
     }
 
-    // animación opcional
-    this.movingPiece = {
-      from,
-      to,
-    };
-
+    // 🟦 MOVIMIENTO NORMAL
     setTimeout(() => {
       this.board[to.row][to.col].piece = piece;
       this.board[from.row][from.col].piece = undefined;
 
-      this.movingPiece = null;
-
       this.afterMove(from.row, from.col, to.row, to.col);
     }, 300);
+  }
+  retryAiMove() {
+    setTimeout(() => {
+      this.triggerAiMove({
+        white: this.scoreWhite,
+        black: this.scoreBlack,
+      });
+    }, 200);
   }
 }

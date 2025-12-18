@@ -1,5 +1,5 @@
 export const environment = {
   production: false,
-  open:'JsbMUA'
+  open:'openai_api_key'
 
 };
