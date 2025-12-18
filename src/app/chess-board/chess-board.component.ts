@@ -1,5 +1,4 @@
 import { DragDropModule } from '@angular/cdk/drag-drop';
-import { ContentObserver } from '@angular/cdk/observers';
 import { CommonModule } from '@angular/common';
 import { Component } from '@angular/core';
 import { Piece } from '../interfaces/Piece.interface';
@@ -291,7 +290,7 @@ export class ChessBoardComponent {
       this.aiColor,
       this.aiThoughtHistory,
       this.lastMove
-        ? `${this.lastMove.from.row},${this.lastMove.from.col}-${this.lastMove.to.row},${this.lastMove.to.col}`
+        ? `${this.lastMove.from.row},${this.lastMove.from.col}->${this.lastMove.to.row},${this.lastMove.to.col}`
         : null
     );
 
@@ -326,7 +325,22 @@ export class ChessBoardComponent {
     }
 
     const targetPiece = this.board[to.row][to.col].piece;
-
+    // 🟥 Mismo color
+    if (targetPiece && targetPiece.color === piece.color) {
+      this.dragFrom = null;
+      this.validMoves = [];
+      this.aiThoughtHistory.push(
+        'The previous move was invalid because I tried to capture my own piece. I must choose a legal move.'
+      );
+      // volver a pedir jugada
+      setTimeout(() => {
+        this.triggerAiMove({
+          white: this.scoreWhite,
+          black: this.scoreBlack,
+        });
+      }, 200);
+      return;
+    }
     // 🟥 captura
     if (targetPiece) {
       const value = this.pieceValues[targetPiece.type] ?? 0;
