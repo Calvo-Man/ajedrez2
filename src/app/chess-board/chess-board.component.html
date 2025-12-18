@@ -1,0 +1,76 @@
+
+
+<!-- Marcador -->
+<div class="scoreboard">
+  <div class="score white">
+    ♔ Blancas: <strong>{{ scoreWhite }}</strong>
+  </div>
+  <div class="score black">
+    ♚ Negras: <strong>{{ scoreBlack }}</strong>
+  </div>
+</div>
+<div
+  class="score-diff"
+  [class.white-adv]="scoreWhite > scoreBlack"
+  [class.black-adv]="scoreBlack > scoreWhite"
+>
+  {{
+    scoreWhite === scoreBlack
+      ? 'Material igualado'
+      : scoreWhite > scoreBlack
+      ? 'Blancas +' + (scoreWhite - scoreBlack)
+      : 'Negras +' + (scoreBlack - scoreWhite)
+  }}
+</div>
+
+<div class="game-container">
+  <!-- Capturadas negras -->
+  <div class="captured">
+    <h3>Negras</h3>
+    <div class="captured-list">
+      <span class="captured-piece" *ngFor="let piece of capturedBlack">
+        {{ getPieceSymbol(piece) }}
+      </span>
+    </div>
+  </div>
+
+  <!-- Tablero -->
+  <div
+    class="board"
+    cdkDropList
+    (cdkDropListDropped)="dropPiece($event)"
+  >
+    <div class="row" *ngFor="let row of board; let rowIndex = index">
+      <div
+        class="cell"
+        *ngFor="let cell of row; let colIndex = index"
+        [ngClass]="cell.color === 0 ? 'white' : 'black'"
+        [attr.data-row]="rowIndex"
+        [attr.data-col]="colIndex"
+        [class.capturing]="cell.capturing"
+        [class.valid]="isValidCell(rowIndex, colIndex)"
+        [class.last-move]="isLastMoveCell(rowIndex, colIndex)"
+      >
+        <span
+          class="piece"
+          *ngIf="cell.piece"
+          cdkDrag
+          [cdkDragDisabled]="cell.piece.color !== currentTurn"
+          (cdkDragStarted)="startDrag(rowIndex, colIndex)"
+        >
+          {{ getPieceSymbol(cell.piece) }}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Capturadas blancas -->
+  <div class="captured">
+    <h3>Blancas</h3>
+    <div class="captured-list">
+      <span class="captured-piece" *ngFor="let piece of capturedWhite">
+        {{ getPieceSymbol(piece) }}
+      </span>
+    </div>
+  </div>
+</div>
