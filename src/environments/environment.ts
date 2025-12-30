@@ -1,5 +1,5 @@
 export const environment = {
   production: false,
-  open:'openai_api_key'
-
+  //Put your OpenAI API key here
+  openApiKey: '',
 };

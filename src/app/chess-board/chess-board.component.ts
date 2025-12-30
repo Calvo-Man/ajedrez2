@@ -6,6 +6,10 @@ import { Piece } from '../interfaces/Piece.interface';
 import { MovementService } from '../services/movement.service';
 import { Board } from '../interfaces/Board.interface';
 import { AiService } from '../services/ai.service';
+import { ValidateMovesService } from '../services/ValidateMoves.service';
+import { CheckMateService } from '../services/check-mate.service';
+import { ChooseMovementService } from '../services/choose-movement.service';
+import { AiMoveContext } from '../interfaces/AiMoveContext';
 
 @Component({
   selector: 'app-chess-board',
@@ -46,7 +50,10 @@ export class ChessBoardComponent {
 
   constructor(
     private movementService: MovementService,
-    private aiService: AiService
+    private aiService: AiService,
+    private validateMovesService: ValidateMovesService,
+    private checkMateService: CheckMateService,
+    private chooseMovementService: ChooseMovementService
   ) {
     this.createBoard();
     this.placePieces();
@@ -67,24 +74,32 @@ export class ChessBoardComponent {
   placePieces() {
     // Peones
     for (let i = 0; i < 8; i++) {
-      this.board[1][i].piece = { type: 'peon', color: 'black' };
-      this.board[6][i].piece = { type: 'peon', color: 'white' };
+      this.board[1][i].piece = {
+        type: 'pawn',
+        color: 'black',
+        hasMoved: false,
+      };
+      this.board[6][i].piece = {
+        type: 'pawn',
+        color: 'white',
+        hasMoved: false,
+      };
     }
 
     const backRow = [
-      'torre',
-      'caballo',
-      'alfil',
-      'reina',
-      'rey',
-      'alfil',
-      'caballo',
-      'torre',
+      'rook',
+      'knight',
+      'bishop',
+      'queen',
+      'king',
+      'bishop',
+      'knight',
+      'rook',
     ];
 
     backRow.forEach((type, i) => {
-      this.board[0][i].piece = { type, color: 'black' };
-      this.board[7][i].piece = { type, color: 'white' };
+      this.board[0][i].piece = { type, color: 'black', hasMoved: false };
+      this.board[7][i].piece = { type, color: 'white', hasMoved: false };
     });
     console.log(this.board);
   }
@@ -92,20 +107,20 @@ export class ChessBoardComponent {
   getPieceSymbol(piece: Piece): string {
     const symbols: any = {
       white: {
-        rey: '♔',
-        reina: '♕',
-        torre: '♖',
-        alfil: '♗',
-        caballo: '♘',
-        peon: '♙',
+        king: '♔',
+        queen: '♕',
+        rook: '♖',
+        bishop: '♗',
+        knight: '♘',
+        pawn: '♙',
       },
       black: {
-        rey: '♚',
-        reina: '♛',
-        torre: '♜',
-        alfil: '♝',
-        caballo: '♞',
-        peon: '♟',
+        king: '♚',
+        queen: '♛',
+        rook: '♜',
+        bishop: '♝',
+        knight: '♞',
+        pawn: '♟',
       },
     };
 
@@ -133,20 +148,99 @@ export class ChessBoardComponent {
       return;
     }
 
-    // ❌ Movimiento no permitido por backend
-    // if (!this.isValidCell(targetRow, targetCol)) {
-    //   this.dragFrom = null;
-    //   this.validMoves = [];
-    //   return;
-    // }
+    const isKingInCheck = this.checkMateService.isKingInCheck(
+      this.board,
+      piece.color
+    );
+
+    if (isKingInCheck) {
+      this.aiThoughtHistory.push(
+        'Invalid move: this move would leave my king in check.'
+      );
+      return;
+    }
+
+    // ❌ Validación de reglas (PEÓN, TORRE, ALFIL, etc.)
+    const isValid = this.validateMovesService.choosePiece(
+      piece,
+      this.board,
+      { row: fromRow, col: fromCol },
+      { row: targetRow, col: targetCol }
+    );
+    const isSafe = this.checkMateService.isMoveSafe(
+      this.board,
+      { row: fromRow, col: fromCol },
+      { row: targetRow, col: targetCol },
+      piece.color
+    );
+
+    if (!isSafe) {
+      this.aiThoughtHistory.push(
+        'Invalid move: this move would leave my king in check.'
+      );
+      return;
+    }
+    if (!isValid) {
+      console.log('Movimiento ilegal');
+      this.dragFrom = null;
+      this.validMoves = [];
+      return;
+    }
 
     const targetPiece = this.board[targetRow][targetCol].piece;
-    // 🟥 Mismo color
+
+    // 🟥 Mismo color (doble seguridad)
     if (targetPiece && targetPiece.color === piece.color) {
       this.dragFrom = null;
       this.validMoves = [];
       return;
     }
+
+    // ♜ ENROQUE
+    const isCastling =
+      piece.type === 'king' &&
+      Math.abs(fromCol - targetCol) === 2 &&
+      fromRow === targetRow;
+
+    if (isCastling) {
+      const isKingSide = targetCol > fromCol;
+
+      const rookFromCol = isKingSide ? 7 : 0;
+      const rookToCol = isKingSide ? targetCol - 1 : targetCol + 1;
+
+      const rook = this.board[fromRow][rookFromCol].piece;
+
+      if (!rook || rook.type !== 'rook') {
+        this.dragFrom = null;
+        this.validMoves = [];
+        return;
+      }
+
+      this.movingPiece = {
+        from: { row: fromRow, col: fromCol },
+        to: { row: targetRow, col: targetCol },
+      };
+
+      setTimeout(() => {
+        // mover rey
+        this.board[targetRow][targetCol].piece = piece;
+        this.board[fromRow][fromCol].piece = undefined;
+
+        // mover torre
+        this.board[fromRow][rookToCol].piece = rook;
+        this.board[fromRow][rookFromCol].piece = undefined;
+
+        piece.hasMoved = true;
+        rook.hasMoved = true;
+
+        this.afterMove(fromRow, fromCol, targetRow, targetCol);
+      }, 300);
+
+      this.dragFrom = null;
+      this.validMoves = [];
+      return;
+    }
+
     // 🟢 Preparar animación
     this.movingPiece = {
       from: { row: fromRow, col: fromCol },
@@ -165,7 +259,6 @@ export class ChessBoardComponent {
         this.capturedWhite.push(targetPiece);
       }
 
-      // animación
       this.board[targetRow][targetCol].capturing = true;
 
       setTimeout(() => {
@@ -191,6 +284,7 @@ export class ChessBoardComponent {
     }, 300);
 
     this.dragFrom = null;
+    this.validMoves = [];
   }
 
   dragFrom: { row: number; col: number } | null = null;
@@ -207,12 +301,12 @@ export class ChessBoardComponent {
     this.dragFrom = { row, col };
 
     // 🔥 AQUÍ se pide al backend
-    this.movementService
-      .findValidMoves(piece, this.board, { row, col })
-      .subscribe((moves: any) => {
-        this.validMoves = moves;
-        console.log('Casillas permitidas:', moves);
-      });
+    // this.movementService
+    //   .findValidMoves(piece, this.board, { row, col })
+    //   .subscribe((moves: any) => {
+    //     this.validMoves = moves;
+    //     console.log('Casillas permitidas:', moves);
+    //   });
   }
 
   getTurnLabel() {
@@ -279,26 +373,33 @@ export class ChessBoardComponent {
 
     // 👇 AQUÍ ENTRA LA IA
     if (this.currentTurn === this.aiColor) {
-      this.triggerAiMove(material);
+      this.triggerAiMove();
     }
   }
-  async triggerAiMove(material: any) {
+  async triggerAiMove() {
     console.log('Turno IA, pensando...');
 
-    const aiResponse = await this.aiService.getBestMove(
+    const legalMoves = this.prepareAiOptions();
+
+    if (legalMoves.length === 0) {
+      console.warn('IA sin movimientos legales');
+      return;
+    }
+    const possibleMoves =
+      this.chooseMovementService.selectCandidates(legalMoves);
+    const aiResult = await this.aiService.getBestMove(
       this.board,
       this.aiColor,
       this.aiThoughtHistory,
       this.lastMove
         ? `${this.lastMove.from.row},${this.lastMove.from.col}->${this.lastMove.to.row},${this.lastMove.to.col}`
-        : null
+        : null,
+      possibleMoves
     );
 
-    const move = JSON.parse(aiResponse);
-    // guardar pensamiento, no posiciones
-    this.aiThoughtHistory.push(move.explanation);
+    this.aiThoughtHistory.push(aiResult.explanation);
 
-    this.applyAiMove(move.from, move.to);
+    this.applyAiMove(aiResult.from, aiResult.to);
   }
 
   applyAiMove(
@@ -310,7 +411,7 @@ export class ChessBoardComponent {
     // ❌ pieza inexistente
     if (!piece) {
       this.aiThoughtHistory.push(
-        'Invalid move: the selected piece does not exist. I must choose a legal move.'
+        'Invalid move: the selected piece does not exist.'
       );
       this.retryAiMove();
       return;
@@ -318,18 +419,92 @@ export class ChessBoardComponent {
 
     // ❌ misma casilla
     if (from.row === to.row && from.col === to.col) {
+      this.aiThoughtHistory.push(
+        'Invalid move: from and to squares are the same.'
+      );
+      this.retryAiMove();
+      return;
+    }
+
+    // ❌ reglas básicas de ajedrez
+    const isLegal = this.validateMovesService.choosePiece(
+      piece,
+      this.board,
+      from,
+      to
+    );
+
+    if (!isLegal) {
+      this.aiThoughtHistory.push(
+        'Invalid move: this move is illegal according to chess rules.'
+      );
+      this.retryAiMove();
+      return;
+    }
+
+    // ❌ NO puede dejar al rey en jaque
+    const isSafe = this.checkMateService.isMoveSafe(
+      this.board,
+      from,
+      to,
+      piece.color
+    );
+
+    if (!isSafe) {
+      this.aiThoughtHistory.push(
+        'Invalid move: this move would leave my king in check.'
+      );
       this.retryAiMove();
       return;
     }
 
     const targetPiece = this.board[to.row][to.col].piece;
 
-    // ❌ mismo color
+    // ❌ mismo color (seguridad extra)
     if (targetPiece && targetPiece.color === piece.color) {
       this.aiThoughtHistory.push(
         'Invalid move: I tried to capture my own piece.'
       );
       this.retryAiMove();
+      return;
+    }
+    // ♜ ENROQUE
+    const isCastling =
+      piece.type === 'king' &&
+      Math.abs(from.col - to.col) === 2 &&
+      from.row === to.row;
+
+    if (isCastling) {
+      const isKingSide = to.col > from.col;
+
+      const rookFromCol = isKingSide ? 7 : 0;
+      const rookToCol = isKingSide ? to.col - 1 : to.col + 1;
+
+      const rook = this.board[from.row][rookFromCol].piece;
+
+      if (!rook || rook.type !== 'rook') {
+        this.retryAiMove();
+        return;
+      }
+
+      this.movingPiece = { from, to };
+
+      setTimeout(() => {
+        // mover rey
+        this.board[to.row][to.col].piece = piece;
+        this.board[from.row][from.col].piece = undefined;
+
+        // mover torre
+        this.board[from.row][rookToCol].piece = rook;
+        this.board[from.row][rookFromCol].piece = undefined;
+
+        // marcar como movidos
+        piece.hasMoved = true;
+        rook.hasMoved = true;
+
+        this.afterMove(from.row, from.col, to.row, to.col);
+      }, 300);
+
       return;
     }
 
@@ -358,7 +533,7 @@ export class ChessBoardComponent {
 
         this.afterMove(from.row, from.col, to.row, to.col);
       }, 300);
-
+      piece.hasMoved = true;
       return;
     }
 
@@ -368,14 +543,109 @@ export class ChessBoardComponent {
       this.board[from.row][from.col].piece = undefined;
 
       this.afterMove(from.row, from.col, to.row, to.col);
+
+      piece.hasMoved = true;
     }, 300);
   }
+
   retryAiMove() {
     setTimeout(() => {
-      this.triggerAiMove({
-        white: this.scoreWhite,
-        black: this.scoreBlack,
-      });
+      this.triggerAiMove();
     }, 200);
+  }
+  chooseAiMove() {
+    const moves = this.chooseMovementService.generateLegalMovesWithScore(
+      this.board,
+      this.aiColor
+    );
+
+    if (moves.length === 0) return null;
+
+    const enrichedMoves = moves.map((m) => {
+      const simulated = this.chooseMovementService.simulateMove(
+        this.board,
+        m.from,
+        m.to
+      );
+
+      const isHanging = this.chooseMovementService.isHangingPiece(
+        simulated,
+        m.to,
+        this.aiColor
+      );
+
+      return {
+        ...m,
+        isHanging,
+      };
+    });
+
+    // 1️⃣ capturas primero
+    // 2️⃣ luego las no colgadas
+    enrichedMoves.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.isHanging !== b.isHanging) return a.isHanging ? 1 : -1;
+      return 0;
+    });
+
+    // 3️⃣ tomamos un poco de aleatoriedad (no siempre la primera)
+    const topMoves = enrichedMoves.slice(0, 5);
+    const chosen = topMoves[Math.floor(Math.random() * topMoves.length)];
+
+    return chosen;
+  }
+  prepareAiOptions(): AiMoveContext[] {
+    const moves = this.chooseMovementService.generateLegalMovesWithContext(
+      this.board,
+      this.aiColor
+    );
+
+    return moves.map((m) => {
+      // 🔹 pieza que hay en la casilla destino (ANTES de mover)
+      const target = this.board[m.to.row][m.to.col].piece;
+
+      // 🔹 ¿es una captura real?
+      const isCapture = !!target && target.color !== this.aiColor;
+
+      // 🔹 simulamos el movimiento
+      const simulated = this.chooseMovementService.simulateMove(
+        this.board,
+        m.from,
+        m.to
+      );
+
+      const isHangingAfterMove = this.chooseMovementService.isHangingPiece(
+        simulated,
+        m.to,
+        this.aiColor
+      );
+
+      const attackersAfterMove =
+        this.chooseMovementService.countAttackers(
+          simulated,
+          m.to,
+          this.aiColor
+        ) ?? 0;
+
+      const givesCheck =
+        this.checkMateService.isKingInCheck(
+          simulated,
+          this.aiColor === 'white' ? 'black' : 'white'
+        ) ?? false;
+
+      // 🔹 aquí se construye el contexto final
+      return {
+        from: m.from,
+        to: m.to,
+        piece: m.piece,
+
+        isCapture,
+        captures: isCapture ? target!.type : undefined,
+
+        isHangingAfterMove,
+        attackersAfterMove,
+        givesCheck,
+      };
+    });
   }
 }

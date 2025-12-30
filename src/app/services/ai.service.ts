@@ -2,6 +2,8 @@ import { Injectable } from '@angular/core';
 import { Board } from '../interfaces/Board.interface';
 import OpenAI from 'openai';
 import { environment } from '../../environments/environment';
+import { AiMoveContext } from '../interfaces/AiMoveContext';
+import { ValidateMovesService } from './ValidateMoves.service';
 export type GamePhase = 'opening' | 'middlegame' | 'endgame';
 
 export type MaterialEvaluation = {
@@ -22,76 +24,110 @@ export class AiService {
   private openAi: OpenAI;
 
   private readonly PIECE_VALUES: Record<string, number> = {
-    peon: 1,
-    caballo: 3,
-    alfil: 3,
-    torre: 5,
-    reina: 9,
-    rey: 0,
+    pawn: 1,
+    knight: 3,
+    bishop: 3,
+    rook: 5,
+    queen: 9,
+    king: 0,
   };
 
-  constructor() {
+  constructor(private validateMovesService: ValidateMovesService) {
     this.openAi = new OpenAI({
-      apiKey: environment.open,
+      apiKey: environment.openApiKey,
       dangerouslyAllowBrowser: true, // 👈 OBLIGATORIO en frontend
     });
+  }
+  coordToChess(row: number, col: number): string {
+    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const rank = 8 - row;
+    return `${files[col]}${rank}`;
   }
 
   async getBestMove(
     board: Board,
     aiColor: 'white' | 'black',
     aiThoughtHistory: string[],
-    lastMove: string | null
-  ): Promise<string> {
+    lastMove: string | null,
+    possibleMoves: AiMoveContext[]
+  ): Promise<{
+    from: { row: number; col: number };
+    to: { row: number; col: number };
+    explanation: string;
+  }> {
     const evaluation = this.evaluateBoard(board);
-    const printBoard = this.boardToAiFormatWithCoords(board);
+    const printBoard = this.boardToFEN(board, aiColor === 'white' ? 'w' : 'b');
     const context = this.buildPromptContext(aiColor, lastMove, evaluation);
+    const movesDescription = possibleMoves
+      .map((m, i) => {
+        //const fromChess = this.coordToChess(m.from.row, m.from.col);
+        //const toChess = this.coordToChess(m.to.row, m.to.col);
+        const algebraic = this.toAlgebraic(m, board);
+
+        return `
+Index ${i}:
+- Algebraic: ${algebraic}
+- Piece: ${m.piece}
+- Capture: ${m.isCapture ? m.captures : 'no'}
+- Hanging after move: ${m.isHangingAfterMove ? 'yes' : 'no'}
+- Attacked by enemies: ${m.attackersAfterMove}
+- Gives check: ${m.givesCheck ? 'yes' : 'no'}
+`;
+      })
+      .join('\n');
+
     const previousThoughts =
       aiThoughtHistory.length > 0
-        ? aiThoughtHistory.map((t, i) => `${i + 1}. ${t}`).join('\n')
-        : 'No previous strategic thoughts.';
+        ? aiThoughtHistory.slice(-5).join('\n')
+        : 'No previous thoughts';
 
-    console.log('Board', printBoard);
     const prompt = `
-You are a professional chess player.
+You are a chess grandmaster and positional analyst.
+You do NOT calculate deep tactics.
+You trust the provided analysis and must not invent moves.
 
 ${context}
 
+Decision priorities (in order):
+1. Never choose a move that loses material (Hanging after move: yes), unless it gives a decisive check.
+2. Prefer safe captures.
+3. Prefer safe checks.
+4. Prefer improving piece activity or central control.
+5. Avoid unnecessary pawn moves.
 
-Your last moves were:
+Move annotations meaning:
+- Hanging after move: yes → the moved piece can be captured with material loss.
+- Attacked by enemies → number of enemy attackers after the move.
+- Gives check → immediate check.
+
+Strategic memory (may be outdated):
 ${previousThoughts}
-Current board position:
+
+Important:
+- These are past intentions, not guarantees.
+- You MUST adapt if the current position contradicts them.
+
+
+Board:
 ${printBoard}
 
-The board is an 8x8 matrix of characters.
-Uppercase letters represent WHITE pieces.
-Lowercase letters represent BLACK pieces.
-P/p pawn, R/r rook, N/n knight, B/b bishop, Q/q queen, K/k king.
-A dot (.) means empty square.
-Board orientation:
-- Row 0 is Black's back rank
-- Row 7 is White's back rank
-- Columns go from a (0) to h (7)
-- White pawns move UP (row decreases)
-- Black pawns move DOWN (row increases)
+Possible legal moves you are allowed to choose from:
+${movesDescription}
 
+Rules:
+- You MUST choose one of the moves listed above
+- Do NOT invent moves
+- Never leave your king in check
+- Use 0-based indexing
 
-Only suggest LEGAL chess moves.
-Pawns capture diagonally, not forward.
-
-Choose the best move for ${aiColor}.
-Use 0-based indexing (0-7).
-
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON:
 {
-  "from": { "row": number, "col": number },
-  "to": { "row": number, "col": number },
-  "explanation": string
+  "index": number,
+  "explanation": "Explain your choice for this move, considering positional and strategic factors."
 }
-
 `;
 
-    console.log('Prompt', prompt);
+    console.log('AI Prompt:', prompt);
     const response = await this.openAi.chat.completions.create({
       model: 'gpt-4.1-mini',
       messages: [
@@ -104,12 +140,58 @@ Return ONLY valid JSON in this format:
           content: prompt,
         },
       ],
-      temperature: 0.3,
+      temperature: 0.7,
     });
 
-    console.log("Response", response.choices[0].message.content);
+    const raw = response.choices[0].message.content;
 
-    return response.choices[0].message.content?.trim() ?? '';
+    if (!raw) {
+      throw new Error('Empty AI response');
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+      console.log('AI response:', parsed);
+      const selectedMove = possibleMoves[parsed.index];
+
+      if (!selectedMove) {
+        throw new Error('AI selected invalid move index');
+      }
+
+      return {
+        from: selectedMove.from,
+        to: selectedMove.to,
+        explanation: parsed.explanation,
+      };
+    } catch {
+      console.error('Invalid JSON:', raw);
+      throw new Error('AI returned invalid JSON');
+    }
+  }
+  private toAlgebraic(move: AiMoveContext, board: Board): string {
+    const from = this.coordToChess(move.from.row, move.from.col);
+    const to = this.coordToChess(move.to.row, move.to.col);
+
+    // enroque
+    if (move.piece === 'king' && Math.abs(move.from.col - move.to.col) === 2) {
+      return move.to.col > move.from.col ? 'O-O' : 'O-O-O';
+    }
+
+    const pieceMap: Record<string, string> = {
+      pawn: '',
+      knight: 'N',
+      bishop: 'B',
+      rook: 'R',
+      queen: 'Q',
+      king: 'K',
+    };
+
+    const pieceLetter = pieceMap[move.piece] ?? '';
+
+    const capture = move.isCapture ? 'x' : '';
+
+    return `${pieceLetter}${capture}${to}`;
   }
 
   buildPromptContext(
@@ -271,14 +353,14 @@ Return ONLY valid JSON in this format:
         if (!cell.piece) continue;
 
         switch (cell.piece.type) {
-          case 'reina':
+          case 'queen':
             queens++;
             break;
-          case 'torre':
+          case 'rook':
             majorPieces++;
             break;
-          case 'alfil':
-          case 'caballo':
+          case 'bishop':
+          case 'knight':
             minorPieces++;
             break;
         }
@@ -311,7 +393,7 @@ Return ONLY valid JSON in this format:
     for (let row = 0; row < 8; row++) {
       for (let col = 0; col < 8; col++) {
         const piece = board[row][col].piece;
-        if (piece?.type === 'rey') {
+        if (piece?.type === 'king') {
           kingPositions[piece.color] = { row, col };
         }
       }
@@ -340,7 +422,7 @@ Return ONLY valid JSON in this format:
           r < 8 &&
           c >= 0 &&
           c < 8 &&
-          board[r][c].piece?.type === 'peon' &&
+          board[r][c].piece?.type === 'pawn' &&
           board[r][c].piece?.color === color
         ) {
           score -= 1;
@@ -355,7 +437,7 @@ Return ONLY valid JSON in this format:
           if (r < 0 || r > 7 || c < 0 || c > 7) continue;
 
           const piece = board[r][c].piece;
-          if (piece && piece.color !== color && piece.type !== 'rey') {
+          if (piece && piece.color !== color && piece.type !== 'king') {
             score += 1;
           }
         }
@@ -401,16 +483,16 @@ Return ONLY valid JSON in this format:
       let value = 0;
 
       switch (piece.type) {
-        case 'peon':
+        case 'pawn':
           value = 2;
           break;
-        case 'caballo':
+        case 'knight':
           value = 1.5;
           break;
-        case 'alfil':
+        case 'bishop':
           value = 1;
           break;
-        case 'reina':
+        case 'queen':
           value = 0.5;
           break;
       }
@@ -439,8 +521,8 @@ Return ONLY valid JSON in this format:
         const sign = piece.color === 'white' ? 1 : -1;
 
         switch (piece.type) {
-          case 'caballo':
-          case 'alfil':
+          case 'knight':
+          case 'bishop':
             // desarrollado
             if (!isInitialRow(piece, row)) {
               score += 0.5 * sign;
@@ -449,7 +531,7 @@ Return ONLY valid JSON in this format:
             }
             break;
 
-          case 'torre':
+          case 'rook':
             // torre activa
             if (!isInitialRow(piece, row)) {
               score += 0.7 * sign;
@@ -473,7 +555,7 @@ Return ONLY valid JSON in this format:
             }
             break;
 
-          case 'reina':
+          case 'queen':
             // reina demasiado pasiva
             if (isInitialRow(piece, row)) {
               score -= 0.2 * sign;
@@ -489,42 +571,38 @@ Return ONLY valid JSON in this format:
   evaluateThreats(board: Board): number {
     let score = 0;
 
-    const THREAT_VALUES: Record<string, number> = {
-      peon: 1,
-      caballo: 3,
-      alfil: 3,
-      torre: 5,
-      reina: 9,
-      rey: 0,
-    };
-
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < 8; col++) {
-        const attacker = board[row][col].piece;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const attacker = board[r][c].piece;
         if (!attacker) continue;
 
         const sign = attacker.color === 'white' ? 1 : -1;
 
-        // escaneamos un radio cercano (amenazas inmediatas)
-        for (let dr = -2; dr <= 2; dr++) {
-          for (let dc = -2; dc <= 2; dc++) {
-            if (dr === 0 && dc === 0) continue;
-
-            const r = row + dr;
-            const c = col + dc;
-
-            if (r < 0 || r > 7 || c < 0 || c > 7) continue;
-
-            const target = board[r][c].piece;
+        for (let tr = 0; tr < 8; tr++) {
+          for (let tc = 0; tc < 8; tc++) {
+            const target = board[tr][tc].piece;
             if (!target) continue;
-
-            // solo amenazas a piezas enemigas
             if (target.color === attacker.color) continue;
 
-            const targetValue = THREAT_VALUES[target.type] ?? 0;
+            // ¿puede capturar?
+            if (
+              !this.validateMovesService.choosePiece(
+                attacker,
+                board,
+                { row: r, col: c },
+                { row: tr, col: tc }
+              )
+            ) {
+              continue;
+            }
 
-            // cuanto más valiosa la pieza amenazada, más importa
-            score += 0.15 * targetValue * sign;
+            // SEE simple: valor objetivo - valor atacante
+            const exchange =
+              this.PIECE_VALUES[target.type] - this.PIECE_VALUES[attacker.type];
+
+            if (exchange > 0) {
+              score += exchange * 0.3 * sign;
+            }
           }
         }
       }
@@ -532,12 +610,13 @@ Return ONLY valid JSON in this format:
 
     return score;
   }
+
   boardToAiFormatWithCoords(board: any[][]): string {
-    let output = '    0 1 2 3 4 5 6 7\n';
+    let output = '    1 2 3 4 5 6 7 8\n';
     output += '    a b c d e f g h\n';
 
     for (let r = 0; r < 8; r++) {
-      output += `${r} | `;
+      output += `${8 - r} | `;
       for (let c = 0; c < 8; c++) {
         const cell = board[r][c];
         if (!cell.piece) {
@@ -546,12 +625,12 @@ Return ONLY valid JSON in this format:
         }
 
         const map: Record<string, string> = {
-          peon: 'P',
-          torre: 'R',
-          caballo: 'N',
-          alfil: 'B',
-          reina: 'Q',
-          rey: 'K',
+          pawn: 'P',
+          rook: 'R',
+          knight: 'N',
+          bishop: 'B',
+          queen: 'Q',
+          king: 'K',
         };
 
         const letter = map[cell.piece.type];
@@ -562,5 +641,50 @@ Return ONLY valid JSON in this format:
     }
 
     return output;
+  }
+  boardToFEN(board: any[][], turn: 'w' | 'b'): string {
+    let fen = '';
+
+    for (let r = 0; r < 8; r++) {
+      let empty = 0;
+
+      for (let c = 0; c < 8; c++) {
+        const cell = board[r][c];
+
+        if (!cell.piece) {
+          empty++;
+          continue;
+        }
+
+        if (empty > 0) {
+          fen += empty;
+          empty = 0;
+        }
+
+        const map: Record<string, string> = {
+          pawn: 'p',
+          rook: 'r',
+          knight: 'n',
+          bishop: 'b',
+          queen: 'q',
+          king: 'k',
+        };
+
+        let char = map[cell.piece.type];
+        if (cell.piece.color === 'white') {
+          char = char.toUpperCase();
+        }
+
+        fen += char;
+      }
+
+      if (empty > 0) fen += empty;
+      if (r < 7) fen += '/';
+    }
+
+    // mínimo viable
+    fen += ` ${turn} - - 0 1`;
+
+    return fen;
   }
 }
